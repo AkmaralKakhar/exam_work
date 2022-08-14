@@ -1,0 +1,119 @@
+version: "3"
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  prometheus_data: {}
+
+services:
+  # PostgreSQL
+  db:
+    image: postgres:9.4
+    hostname: db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    ports:
+      - "5432:5432"
+    networks:
+       - default
+
+# node-exporter
+  node-exporter:
+    image: prom/node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    container_name: exporter
+    hostname: exporter
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.ignored-mount-points
+      - ^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)
+    ports:
+      - 9100:9100
+    restart: unless-stopped
+    environment:
+      TZ: "Europe/Moscow"
+    networks:
+      - default
+
+# prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus:/etc/prometheus/
+    container_name: prometheus
+    hostname: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - 9090:9090
+    restart: unless-stopped
+    environment:
+      TZ: "Europe/Moscow"
+    networks:
+      - default
+
+
+
+# grafana
+  grafana:
+    image: grafana/grafana
+    user: root
+    depends_on:
+      - prometheus
+    ports:
+      - 3000:3000
+    volumes:
+      - ./grafana:/var/lib/grafana
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
+    container_name: grafana
+    hostname: grafana
+    restart: unless-stopped
+    environment:
+      TZ: "Europe/Moscow"
+    networks:
+      - default
+  # Django
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    hostname: web
+    # From documentation:
+    # However, Compose does not wait until a container is “ready”
+    # (whatever that means for your particular application) - only until it’s
+    # running. There’s a good reason for this.
+    command: ["./wait-for-postgres.sh", "db", "./entrypoint.sh"]
+    volumes:
+      # Mount src to app
+      - ./src:/app
+      # Mount entrypoint.sh to run in container
+      - ./entrypoint.sh:/app/entrypoint.sh
+      # Mount wait-for-postgres.sh to run in container
+      - ./wait-for-postgres.sh:/app/wait-for-postgres.sh
+    expose:
+      - "8000"
+    depends_on:
+      - db
+    restart: always
+    networks:
+      - default
+
+  # Load Balancer
+  lb:
+    image: dockercloud/haproxy
+    # Recommended way is using networks instead of links
+    links:
+     - web
+    volumes:
+      # Mount unix socket for back communication (needs to be updated)
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+     - "80:80"
